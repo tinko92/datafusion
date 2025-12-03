@@ -762,7 +762,7 @@ impl<S: SimplifyInfo> TreeNodeRewriter for Simplifier<'_, S> {
     fn f_up(&mut self, expr: Expr) -> Result<Transformed<Expr>> {
         use datafusion_expr::Operator::{
             And, BitwiseAnd, BitwiseOr, BitwiseShiftLeft, BitwiseShiftRight, BitwiseXor,
-            Divide, Eq, Modulo, Multiply, NotEq, Or, RegexIMatch, RegexMatch,
+            Divide, Eq, Gt, GtEq, Lt, LtEq, Modulo, Multiply, NotEq, Or, Plus, RegexIMatch, RegexMatch,
             RegexNotIMatch, RegexNotMatch,
         };
 
@@ -873,6 +873,59 @@ impl<S: SimplifyInfo> TreeNodeRewriter for Simplifier<'_, S> {
                     None => lit_bool_null(),
                 })
             }
+
+            // a {<, >, <=, >=, =, !=} (a + b)  -->  0 {<, >, <=, >=, =, !=} b
+            Expr::BinaryExpr(BinaryExpr {
+                left,
+                op: op @ (Lt | LtEq | Gt | GtEq | Eq | NotEq),
+                right,
+            }) if !info.nullable(&left)?
+                && matches!(
+                    info.get_data_type(&left)?,
+                    DataType::Int8
+                        | DataType::Int16
+                        | DataType::Int32
+                        | DataType::Int64
+                        | DataType::UInt8
+                        | DataType::UInt16
+                        | DataType::UInt32
+                        | DataType::UInt64
+                )
+                && matches!(
+                    info.get_data_type(&right)?,
+                    DataType::Int8
+                        | DataType::Int16
+                        | DataType::Int32
+                        | DataType::Int64
+                        | DataType::UInt8
+                        | DataType::UInt16
+                        | DataType::UInt32
+                        | DataType::UInt64
+                )
+                && matches!(
+                    right.as_ref(),
+                    Expr::BinaryExpr(BinaryExpr {
+                        left: inner_left,
+                        op: Plus,
+                        right: _,
+                    }) if *left == **inner_left
+                ) =>
+            {
+                let b = match *right {
+                    Expr::BinaryExpr(BinaryExpr { right, .. }) => right,
+                    _ => unreachable!(),
+                };
+
+                Transformed::yes(Expr::BinaryExpr(BinaryExpr {
+                    left: Box::new(Expr::Literal(
+                        ScalarValue::new_zero(&info.get_data_type(&left)?)?,
+                        None,
+                    )),
+                    op,
+                    right: b,
+                }))
+            }
+
 
             //
             // Rules for OR
