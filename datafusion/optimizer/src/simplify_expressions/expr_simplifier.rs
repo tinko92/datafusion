@@ -52,7 +52,7 @@ use super::inlist_simplifier::ShortenInListSimplifier;
 use super::utils::*;
 use crate::analyzer::type_coercion::TypeCoercionRewriter;
 use crate::simplify_expressions::regex::simplify_regex_expr;
-use crate::simplify_expressions::expr_interval_bound::integer_interval_for_expr;
+use crate::simplify_expressions::expr_interval_bound::{integer_interval_for_expr, is_integer_type};
 use crate::simplify_expressions::unwrap_cast::{
     is_cast_expr_and_support_unwrap_cast_in_comparison_for_binary,
     is_cast_expr_and_support_unwrap_cast_in_comparison_for_inlist,
@@ -763,7 +763,7 @@ impl<S: SimplifyInfo> TreeNodeRewriter for Simplifier<'_, S> {
     fn f_up(&mut self, expr: Expr) -> Result<Transformed<Expr>> {
         use datafusion_expr::Operator::{
             And, BitwiseAnd, BitwiseOr, BitwiseShiftLeft, BitwiseShiftRight, BitwiseXor,
-            Divide, Eq, Gt, GtEq, Lt, LtEq, Modulo, Multiply, NotEq, Or, Plus, RegexIMatch, RegexMatch,
+            Divide, Eq, Gt, GtEq, Lt, LtEq, Modulo, Multiply, NotEq, Or, Plus, Minus, RegexIMatch, RegexMatch,
             RegexNotIMatch, RegexNotMatch,
         };
 
@@ -881,28 +881,8 @@ impl<S: SimplifyInfo> TreeNodeRewriter for Simplifier<'_, S> {
                 op: op @ (Lt | LtEq | Gt | GtEq | Eq | NotEq),
                 right,
             }) if !info.nullable(&left)?
-                && matches!(
-                    info.get_data_type(&left)?,
-                    DataType::Int8
-                        | DataType::Int16
-                        | DataType::Int32
-                        | DataType::Int64
-                        | DataType::UInt8
-                        | DataType::UInt16
-                        | DataType::UInt32
-                        | DataType::UInt64
-                )
-                && matches!(
-                    info.get_data_type(&right)?,
-                    DataType::Int8
-                        | DataType::Int16
-                        | DataType::Int32
-                        | DataType::Int64
-                        | DataType::UInt8
-                        | DataType::UInt16
-                        | DataType::UInt32
-                        | DataType::UInt64
-                )
+                && is_integer_type(&info.get_data_type(&left)?)
+                && is_integer_type(&info.get_data_type(&right)?)
                 && matches!(
                     right.as_ref(),
                     Expr::BinaryExpr(BinaryExpr {
@@ -926,6 +906,91 @@ impl<S: SimplifyInfo> TreeNodeRewriter for Simplifier<'_, S> {
                     )),
                     op,
                     right: b,
+                }))
+            }
+
+            Expr::BinaryExpr(BinaryExpr {
+                left,
+                op: op @ (Lt | LtEq | Gt | GtEq | Eq | NotEq),
+                right,
+            }) if !info.nullable(&left)?
+                && is_integer_type(&info.get_data_type(&left)?)
+                && is_integer_type(&info.get_data_type(&right)?)
+                && matches!(
+                    left.as_ref(),
+                    Expr::BinaryExpr(BinaryExpr {
+                        left: inner_left,
+                        op: Plus,
+                        right: _,
+                    }) if *right == **inner_left
+                )
+                && !integer_interval_for_expr(&left, info)?.is_unbounded()
+                && !integer_interval_for_expr(&right, info)?.is_unbounded() =>
+            {
+                let b = match *left {
+                    Expr::BinaryExpr(BinaryExpr { left: _, op: _, right }) => right,
+                    _ => unreachable!(),
+                };
+
+                Transformed::yes(Expr::BinaryExpr(BinaryExpr {
+                    left: b,
+                    op,
+                    right: Box::new(Expr::Literal(
+                        ScalarValue::new_zero(&info.get_data_type(&right)?)?,
+                        None,
+                    )),
+                }))
+            }
+
+            Expr::BinaryExpr(BinaryExpr {
+                left,
+                op: cmp_op @ (Lt | LtEq | Gt | GtEq | Eq | NotEq),
+                right,
+            })
+                if !info.nullable(&left)? && !info.nullable(&right)?
+                && is_integer_type(&info.get_data_type(&left)?)
+                && is_integer_type(&info.get_data_type(&right)?)
+                && matches!(
+                    (left.as_ref(), right.as_ref()),
+                    (
+                        Expr::BinaryExpr(BinaryExpr {
+                            left: a1,
+                            op: Plus | Minus,
+                            right: _,
+                        }),
+                        Expr::BinaryExpr(BinaryExpr {
+                            left: a2,
+                            op: Plus | Minus,
+                            right: _,
+                        }),
+                    ) if **a1 == **a2
+                )
+                && !integer_interval_for_expr(&left, info)?.is_unbounded()
+                && !integer_interval_for_expr(&right, info)?.is_unbounded() =>
+            {
+                let (b, op_l, c, op_r) = match (*left, *right) {
+                    (
+                        Expr::BinaryExpr(BinaryExpr { op: op_l @ (Plus | Minus), right: b, .. }),
+                        Expr::BinaryExpr(BinaryExpr { op: op_r @ (Plus | Minus), right: c, .. }),
+                    ) => (b, op_l, c, op_r),
+                    _ => unreachable!(),
+                };
+
+                let apply_sign = |expr: Box<Expr>, op: &Operator| -> Box<Expr> {
+                    match op {
+                        Plus => expr,
+                        Minus => Box::new(Expr::Negative(expr)),
+                        _ => unreachable!(),
+                    }
+                };
+
+                let new_left = apply_sign(b, &op_l);
+                let new_right = apply_sign(c, &op_r);
+
+                Transformed::yes(Expr::BinaryExpr(BinaryExpr {
+                    left: new_left,
+                    op: cmp_op,
+                    right: new_right,
                 }))
             }
 

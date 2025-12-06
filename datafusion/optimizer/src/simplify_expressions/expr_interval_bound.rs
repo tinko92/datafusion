@@ -81,14 +81,22 @@ where
 
 fn cast_scalar_int_to_type(value: &ScalarValue, to: &DataType) -> Result<ScalarValue> {
     match (value, to) {
+        (ScalarValue::Int8(v),  DataType::Int64) => Ok(ScalarValue::Int64(v.map(|x| x as i64))),
+        (ScalarValue::Int8(v),  DataType::Int32) => Ok(ScalarValue::Int32(v.map(|x| x as i32))),
+        (ScalarValue::Int8(v),  DataType::Int16) => Ok(ScalarValue::Int16(v.map(|x| x as i16))),
+        (ScalarValue::Int8(v),  DataType::Int8)  => Ok(ScalarValue::Int8(*v)),
+
         (ScalarValue::Int16(v), DataType::Int64) => Ok(ScalarValue::Int64(v.map(|x| x as i64))),
         (ScalarValue::Int16(v), DataType::Int32) => Ok(ScalarValue::Int32(v.map(|x| x as i32))),
         (ScalarValue::Int16(v), DataType::Int16) => Ok(ScalarValue::Int16(*v)),
-        
+        (ScalarValue::Int16(v), DataType::Int8)  => Ok(ScalarValue::Int8(v.map(|x| x as i8))),
+
+        (ScalarValue::Int32(v), DataType::Int8)  => Ok(ScalarValue::Int8(v.map(|x| x as i8))),
         (ScalarValue::Int32(v), DataType::Int16) => Ok(ScalarValue::Int16(v.map(|x| x as i16))),
         (ScalarValue::Int32(v), DataType::Int32) => Ok(ScalarValue::Int32(*v)),
         (ScalarValue::Int32(v), DataType::Int64) => Ok(ScalarValue::Int64(v.map(|x| x as i64))),
 
+        (ScalarValue::Int64(v), DataType::Int8)  => Ok(ScalarValue::Int8(v.map(|x| x as i8))),
         (ScalarValue::Int64(v), DataType::Int16) => Ok(ScalarValue::Int16(v.map(|x| x as i16))),
         (ScalarValue::Int64(v), DataType::Int32) => Ok(ScalarValue::Int32(v.map(|x| x as i32))),
         (ScalarValue::Int64(v), DataType::Int64) => Ok(ScalarValue::Int64(*v)),
