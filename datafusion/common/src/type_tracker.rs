@@ -100,13 +100,11 @@ impl OriginalTypeTracker {
         }
     }
 
-    /// Check if a column was promoted from a small integer type to Int64
-    pub fn was_promoted_from_small_int(&self, column: &Column, current_type: &DataType) -> bool {
+    /// Check if a column was originally a small integer type (Int8/16/32)
+    /// If so, it's safe to optimize since we know its original bounds
+    pub fn was_promoted_from_small_int(&self, column: &Column, _current_type: &DataType) -> bool {
         if let Some(original_type) = self.get_original_type(column) {
-            match (&original_type, current_type) {
-                (DataType::Int8 | DataType::Int16 | DataType::Int32, DataType::Int64) => true,
-                _ => false,
-            }
+            matches!(original_type, DataType::Int8 | DataType::Int16 | DataType::Int32)
         } else {
             false
         }

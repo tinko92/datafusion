@@ -46,6 +46,7 @@ use datafusion_common::{
     config_err, exec_err, plan_datafusion_err, DFSchema, DataFusionError,
     ResolvedTableReference, TableReference,
 };
+use datafusion_common::type_tracker::OriginalTypeTracker;
 use datafusion_execution::config::SessionConfig;
 use datafusion_execution::runtime_env::RuntimeEnv;
 use datafusion_execution::TaskContext;
@@ -137,6 +138,8 @@ pub struct SessionState {
     session_id: String,
     /// Responsible for analyzing and rewrite a logical plan before optimization
     analyzer: Analyzer,
+    /// Tracks original column types before type coercion for overflow-safe optimization
+    original_type_tracker: OriginalTypeTracker,
     /// Provides support for customizing the SQL planner, e.g. to add support for custom operators like `->>` or `?`
     expr_planners: Vec<Arc<dyn ExprPlanner>>,
     /// Provides support for customizing the SQL type planning
@@ -588,6 +591,11 @@ impl SessionState {
         &self.optimizer
     }
 
+    /// Returns the [`OriginalTypeTracker`] for this session
+    pub fn original_type_tracker(&self) -> &OriginalTypeTracker {
+        &self.original_type_tracker
+    }
+
     /// Returns the [`ExprPlanner`]s for this session
     pub fn expr_planners(&self) -> &[Arc<dyn ExprPlanner>] {
         &self.expr_planners
@@ -934,6 +942,7 @@ impl SessionState {
 pub struct SessionStateBuilder {
     session_id: Option<String>,
     analyzer: Option<Analyzer>,
+    original_type_tracker: Option<OriginalTypeTracker>,
     expr_planners: Option<Vec<Arc<dyn ExprPlanner>>>,
     #[cfg(feature = "sql")]
     type_planner: Option<Arc<dyn TypePlanner>>,
@@ -972,6 +981,7 @@ impl SessionStateBuilder {
         Self {
             session_id: None,
             analyzer: None,
+            original_type_tracker: None,
             expr_planners: None,
             #[cfg(feature = "sql")]
             type_planner: None,
@@ -1023,6 +1033,7 @@ impl SessionStateBuilder {
         Self {
             session_id: None,
             analyzer: Some(existing.analyzer),
+            original_type_tracker: Some(existing.original_type_tracker),
             expr_planners: Some(existing.expr_planners),
             #[cfg(feature = "sql")]
             type_planner: existing.type_planner,
@@ -1386,6 +1397,7 @@ impl SessionStateBuilder {
         let Self {
             session_id,
             analyzer,
+            original_type_tracker,
             expr_planners,
             #[cfg(feature = "sql")]
             type_planner,
@@ -1417,6 +1429,7 @@ impl SessionStateBuilder {
         let mut state = SessionState {
             session_id: session_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
             analyzer: analyzer.unwrap_or_default(),
+            original_type_tracker: original_type_tracker.unwrap_or_default(),
             expr_planners: expr_planners.unwrap_or_default(),
             #[cfg(feature = "sql")]
             type_planner,
@@ -2004,6 +2017,10 @@ impl OptimizerConfig for SessionState {
     fn function_registry(&self) -> Option<&dyn FunctionRegistry> {
         Some(self)
     }
+
+    fn original_type_tracker(&self) -> Option<OriginalTypeTracker> {
+        Some(self.original_type_tracker.clone())
+    }
 }
 
 /// Create a new task context instance from SessionState
@@ -2074,7 +2091,7 @@ impl SimplifyInfo for SessionSimplifyProvider<'_> {
         Ok(None)
     }
 
-    fn is_originally_small_int(&self, _expr: &datafusion_expr::Expr) -> datafusion_common::Result<bool> {
+    fn is_originally_small_int(&self, _expr: &Expr) -> datafusion_common::Result<bool> {
         // SessionSimplifyProvider doesn't have access to original type tracking
         Ok(false)
     }

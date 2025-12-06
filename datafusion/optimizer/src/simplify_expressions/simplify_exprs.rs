@@ -17,10 +17,9 @@
 
 //! Simplify expressions optimizer rule and implementation
 
-use std::sync::Arc;
 
 use datafusion_common::tree_node::{Transformed, TreeNode};
-use datafusion_common::{DFSchema, DFSchemaRef, DataFusionError, Result};
+use datafusion_common::{DFSchemaRef, DataFusionError, Result};
 use datafusion_expr::execution_props::ExecutionProps;
 use datafusion_expr::logical_plan::LogicalPlan;
 use datafusion_expr::simplify::SimplifyContext;
@@ -70,7 +69,7 @@ impl OptimizerRule for SimplifyExpressions {
         let mut execution_props = ExecutionProps::new();
         execution_props.query_execution_start_time = config.query_execution_start_time();
         execution_props.config_options = Some(config.options());
-        Self::optimize_internal(plan, &execution_props)
+        Self::optimize_internal(plan, &execution_props, config)
     }
 }
 
@@ -78,29 +77,43 @@ impl SimplifyExpressions {
     fn optimize_internal(
         plan: LogicalPlan,
         execution_props: &ExecutionProps,
+        config: &dyn OptimizerConfig,
     ) -> Result<Transformed<LogicalPlan>> {
         let schema = if !plan.inputs().is_empty() {
             DFSchemaRef::new(merge_schema(&plan.inputs()))
-        } else if let LogicalPlan::TableScan(scan) = &plan {
+        } else if let LogicalPlan::TableScan(_scan) = &plan {
             // When predicates are pushed into a table scan, there is no input
             // schema to resolve predicates against, so it must be handled specially
             //
-            // Note that this is not `plan.schema()` which is the *output*
-            // schema, and reflects any pushed down projection. The output schema
-            // will not contain columns that *only* appear in pushed down predicates
-            // (and no where else) in the plan.
-            //
-            // Thus, use the full schema of the inner provider without any
-            // projection applied for simplification
-            Arc::new(DFSchema::try_from_qualified_schema(
-                scan.table_name.clone(),
-                &scan.source.schema(),
-            )?)
+            // For our overflow optimization, we need the actual current types
+            // after type coercion, so we use plan.schema() which reflects the
+            // current state of expressions in the plan
+            plan.schema().clone()
         } else {
-            Arc::new(DFSchema::empty())
+            plan.schema().clone()
         };
 
-        let info = SimplifyContext::new(execution_props).with_schema(schema);
+        let mut info = SimplifyContext::new(execution_props).with_schema(schema);
+
+        // Create and populate original type tracker from TableScan nodes
+        let type_tracker = config.original_type_tracker()
+            .unwrap_or_else(|| datafusion_common::type_tracker::OriginalTypeTracker::new());
+
+        // Extract original types from TableScan in the current plan
+        if let LogicalPlan::TableScan(scan) = &plan {
+            let original_schema = scan.source.schema();
+            for field in original_schema.fields.iter() {
+                if let Err(e) = type_tracker.record_original_type(
+                    &Some(scan.table_name.to_string()),
+                    field.name(),
+                    field.data_type().clone(),
+                ) {
+                    log::debug!("Failed to record original type for {}: {}", field.name(), e);
+                }
+            }
+        }
+
+        info = info.with_original_type_tracker(type_tracker);
 
         // Inputs have already been rewritten (due to bottom-up traversal handled by Optimizer)
         // Just need to rewrite our own expressions

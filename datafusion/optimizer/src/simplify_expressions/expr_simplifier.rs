@@ -1976,7 +1976,8 @@ impl<S: SimplifyInfo> TreeNodeRewriter for Simplifier<'_, S> {
                     if let Some(constant) = extract_addition_constant(&left) {
                         // For simplicity and safety: only optimize positive constants
                         // This covers the most common case: a + 1 < a
-                        if constant > 0 && !may_overflow_with_positive_addition(&right, info)? {
+                        // Only optimize if the expression was originally a small integer type (Int8/16/32)
+                        if constant > 0 && info.is_originally_small_int(&right)? {
                             Transformed::yes(lit(false))
                         } else {
                             // Potential overflow or negative constant - do not optimize
@@ -1994,22 +1995,15 @@ impl<S: SimplifyInfo> TreeNodeRewriter for Simplifier<'_, S> {
                             println!("DEBUG: Left expr for overflow check: {:?}", left);
                             // For simplicity and safety: only optimize positive constants
                             // This covers the most common case: a < a + 1
-                            if constant > 0 {
-                                let overflow_result = may_overflow_with_positive_addition(&left, info)?;
-                                println!("DEBUG: Overflow check result: {}", overflow_result);
-                                if !overflow_result {
-                                    println!("DEBUG: OPTIMIZING TO TRUE!");
-                                    Transformed::yes(lit(true))
-                                } else {
-                                    println!("DEBUG: NOT optimizing - overflow risk");
-                                    // Potential overflow - do not optimize
-                                    Transformed::no(Expr::BinaryExpr(BinaryExpr { left, op: Operator::Lt, right }))
-                                }
-                            } else {
-                                println!("DEBUG: NOT optimizing - non-positive constant: {}", constant);
-                                // Non-positive constant - do not optimize
-                                Transformed::no(Expr::BinaryExpr(BinaryExpr { left, op: Operator::Lt, right }))
-                            }
+                            // Only optimize if the expression was originally a small integer type (Int8/16/32)
+                            if constant > 0 && info.is_originally_small_int(&left)? {
+                            println!("DEBUG: OPTIMIZING TO TRUE - safe from overflow!");
+                            Transformed::yes(lit(true))
+                        } else {
+                            println!("DEBUG: NOT optimizing - overflow risk or non-positive constant: {}", constant);
+                            // Potential overflow or negative constant - do not optimize
+                            Transformed::no(Expr::BinaryExpr(BinaryExpr { left, op: Operator::Lt, right }))
+                        }
                         } else {
                             println!("DEBUG: Could not extract constant");
                             Transformed::no(Expr::BinaryExpr(BinaryExpr { left, op: Operator::Lt, right }))
@@ -2297,124 +2291,8 @@ fn get_int_scalar_value(val: &ScalarValue) -> Option<i64> {
     }
 }
 
-/// Extract the original data type before type coercion
-/// This helps us identify if an Int64 expression was originally Int8/16/32
-fn extract_original_data_type(expr: &Expr) -> Option<DataType> {
-    match expr {
-        // Check for direct column reference - we can infer from column name
-        Expr::Column(col) => {
-            // Try to infer original type from column name patterns
-            // This is a heuristic approach
-            if col.name.contains("int8") || col.name.contains("tinyint") {
-                Some(DataType::Int8)
-            } else if col.name.contains("int16") || col.name.contains("smallint") {
-                Some(DataType::Int16)
-            } else if col.name.contains("int32") || col.name.contains("int") || col.name.contains("age") {
-                Some(DataType::Int32)
-            } else if col.name.contains("int64") || col.name.contains("bigint") {
-                Some(DataType::Int64)
-            } else {
-                // Default assumption: if we see a column without cast, it was originally Int32 (most common)
-                // This is a reasonable heuristic for typical SQL schemas
-                Some(DataType::Int32)
-            }
-        },
 
-        // Check for Cast expressions - this is key!
-        Expr::Cast(Cast { expr: inner_expr, data_type, .. }) => {
-            println!("DEBUG: Found Cast to {:?}, inner: {:?}", data_type, inner_expr);
-            // If we see a cast from a smaller integer to Int64, return the original type
-            match data_type {
-                DataType::Int64 => {
-                    // Recursively check the inner expression
-                    println!("DEBUG: Cast to Int64, checking inner expr...");
-                    if let Some(original_type) = extract_original_data_type(inner_expr) {
-                        println!("DEBUG: Found original type in inner expr: {:?}", original_type);
-                        return Some(original_type);
-                    } else {
-                        println!("DEBUG: No original type found in inner expr");
-                    }
-                },
-                // Return the cast target type if it's a small integer
-                DataType::Int8 | DataType::Int16 | DataType::Int32 => {
-                    println!("DEBUG: Found cast to small integer: {:?}", data_type);
-                    return Some(data_type.clone());
-                },
-                _ => {
-                    println!("DEBUG: Cast to other type: {:?}", data_type);
-                }
-            }
-            None
-        },
 
-        // For binary expressions, check both sides
-        Expr::BinaryExpr(BinaryExpr { left, right, .. }) => {
-            if let Some(left_type) = extract_original_data_type(left) {
-                return Some(left_type);
-            }
-            if let Some(right_type) = extract_original_data_type(right) {
-                return Some(right_type);
-            }
-            None
-        },
-
-        _ => None,
-    }
-}
-
-/// Check if adding a positive constant to the expression might overflow
-/// This is a conservative implementation
-fn may_overflow_with_positive_addition<S: SimplifyInfo>(
-    expr: &Expr,
-    info: &S,
-) -> Result<bool> {
-    // 1. 首先尝试获取原始类型（类型提升前）
-    let original_type = extract_original_data_type(expr);
-    println!("DEBUG: extract_original_data_type returned: {:?}", original_type);
-
-    if let Some(original_type) = original_type {
-        match original_type {
-            // 如果原始类型是Int8/16/32，即使被提升到Int64也是安全的
-            DataType::Int8 | DataType::Int16 | DataType::Int32 => {
-                println!("DEBUG: Original type is small integer ({:?}) - SAFE", original_type);
-                return Ok(false); // 安全，可以优化
-            },
-            _ => {
-                println!("DEBUG: Original type is other ({:?}) - CONSERVATIVE", original_type);
-            }
-        }
-    } else {
-        println!("DEBUG: No original type found");
-    }
-
-    // 2. 如果没有原始类型信息，使用当前的数据类型
-    let data_type = info.get_data_type(expr)?;
-    println!("DEBUG: Current data type: {:?}", data_type);
-
-    match data_type {
-        // === 你的策略第一部分：小整数统一放行 ===
-        // 逻辑：Int8, Int16, Int32 即使溢出，相对于无限精度的数学逻辑来说，
-        // 我们优化为 true 是合理的。或者我们可以认为它们隐式提升到了 Int64。
-        DataType::Int8 | DataType::Int16 | DataType::Int32 => {
-            println!("DEBUG: Current type is small integer - SAFE");
-            // 返回 false 表示"不会溢出"（或者说安全，可以优化）
-            Ok(false)
-        },
-
-        // === 你的策略第二部分：Int64 检查 ===
-        DataType::Int64 => {
-            println!("DEBUG: Current type is Int64 with no original type info - CONSERVATIVE");
-            // 保守策略：如果没有原始类型信息，假设可能是原始Int64
-            Ok(true) // 返回 true 表示"可能会溢出"，禁止优化
-        },
-
-        // 其他类型（如浮点数、Decimal等），暂时保守处理
-        _ => {
-            println!("DEBUG: Other type - CONSERVATIVE");
-            Ok(true)
-        },
-    }
-}
 
 
 
