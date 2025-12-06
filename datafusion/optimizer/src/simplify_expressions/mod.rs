@@ -21,6 +21,7 @@
 pub mod expr_simplifier;
 mod inlist_simplifier;
 mod regex;
+mod expr_interval_bound;
 pub mod simplify_exprs;
 mod simplify_predicates;
 mod unwrap_cast;

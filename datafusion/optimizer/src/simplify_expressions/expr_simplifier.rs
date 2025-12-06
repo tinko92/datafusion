@@ -52,6 +52,7 @@ use super::inlist_simplifier::ShortenInListSimplifier;
 use super::utils::*;
 use crate::analyzer::type_coercion::TypeCoercionRewriter;
 use crate::simplify_expressions::regex::simplify_regex_expr;
+use crate::simplify_expressions::expr_interval_bound::integer_interval_for_expr;
 use crate::simplify_expressions::unwrap_cast::{
     is_cast_expr_and_support_unwrap_cast_in_comparison_for_binary,
     is_cast_expr_and_support_unwrap_cast_in_comparison_for_inlist,
@@ -909,7 +910,9 @@ impl<S: SimplifyInfo> TreeNodeRewriter for Simplifier<'_, S> {
                         op: Plus,
                         right: _,
                     }) if *left == **inner_left
-                ) =>
+                )
+                && !integer_interval_for_expr(&left, info)?.is_unbounded()
+                && !integer_interval_for_expr(&right, info)?.is_unbounded() =>
             {
                 let b = match *right {
                     Expr::BinaryExpr(BinaryExpr { right, .. }) => right,
