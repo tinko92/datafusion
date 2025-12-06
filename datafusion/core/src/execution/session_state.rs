@@ -2068,6 +2068,16 @@ impl SimplifyInfo for SessionSimplifyProvider<'_> {
     fn get_data_type(&self, expr: &Expr) -> datafusion_common::Result<DataType> {
         expr.get_type(self.df_schema)
     }
+
+    fn get_original_type_info(&self, _column: &datafusion_common::Column) -> datafusion_common::Result<Option<datafusion_common::type_tracker::OriginalTypeInfo>> {
+        // SessionSimplifyProvider doesn't have access to original type tracking
+        Ok(None)
+    }
+
+    fn is_originally_small_int(&self, _expr: &datafusion_expr::Expr) -> datafusion_common::Result<bool> {
+        // SessionSimplifyProvider doesn't have access to original type tracking
+        Ok(false)
+    }
 }
 
 #[derive(Debug)]

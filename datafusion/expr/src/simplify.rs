@@ -18,7 +18,8 @@
 //! Structs and traits to provide the information needed for expression simplification.
 
 use arrow::datatypes::DataType;
-use datafusion_common::{internal_datafusion_err, DFSchemaRef, Result};
+use datafusion_common::{internal_datafusion_err, DFSchemaRef, Result, Column};
+use datafusion_common::type_tracker::{OriginalTypeInfo, OriginalTypeTracker};
 
 use crate::{execution_props::ExecutionProps, Expr, ExprSchemable};
 
@@ -40,6 +41,12 @@ pub trait SimplifyInfo {
 
     /// Returns data type of this expr needed for determining optimized int type of a value
     fn get_data_type(&self, expr: &Expr) -> Result<DataType>;
+
+    /// Get original type information for a column before coercion
+    fn get_original_type_info(&self, column: &Column) -> Result<Option<OriginalTypeInfo>>;
+
+    /// Check if an expression was originally a small integer type (Int8/16/32)
+    fn is_originally_small_int(&self, expr: &Expr) -> Result<bool>;
 }
 
 /// Provides simplification information based on DFSchema and
@@ -53,6 +60,7 @@ pub trait SimplifyInfo {
 pub struct SimplifyContext<'a> {
     schema: Option<DFSchemaRef>,
     props: &'a ExecutionProps,
+    original_type_tracker: Option<OriginalTypeTracker>,
 }
 
 impl<'a> SimplifyContext<'a> {
@@ -61,12 +69,19 @@ impl<'a> SimplifyContext<'a> {
         Self {
             schema: None,
             props,
+            original_type_tracker: None,
         }
     }
 
     /// Register a [`DFSchemaRef`] with this context
     pub fn with_schema(mut self, schema: DFSchemaRef) -> Self {
         self.schema = Some(schema);
+        self
+    }
+
+    /// Set the original type tracker for overflow-safe optimization
+    pub fn with_original_type_tracker(mut self, tracker: OriginalTypeTracker) -> Self {
+        self.original_type_tracker = Some(tracker);
         self
     }
 }
@@ -101,6 +116,38 @@ impl SimplifyInfo for SimplifyContext<'_> {
 
     fn execution_props(&self) -> &ExecutionProps {
         self.props
+    }
+
+    fn get_original_type_info(&self, column: &Column) -> Result<Option<OriginalTypeInfo>> {
+        if let Some(tracker) = &self.original_type_tracker {
+            // Get current type first
+            let current_type = self.get_data_type(&Expr::Column(column.clone()))?;
+            Ok(tracker.get_original_type_info(column, &current_type))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn is_originally_small_int(&self, expr: &Expr) -> Result<bool> {
+        match expr {
+            Expr::Column(col) => {
+                if let Some(tracker) = &self.original_type_tracker {
+                    let current_type = self.get_data_type(expr)?;
+                    Ok(tracker.was_promoted_from_small_int(col, &current_type))
+                } else {
+                    Ok(false)
+                }
+            }
+            Expr::Cast(cast_expr) => {
+                // Recursively check if the cast expression contains a small int column
+                self.is_originally_small_int(&cast_expr.expr)
+            }
+            Expr::Alias(alias) => {
+                // Check the aliased expression
+                self.is_originally_small_int(&alias.expr)
+            }
+            _ => Ok(false),
+        }
     }
 }
 

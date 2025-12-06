@@ -30,6 +30,7 @@ use datafusion_common::config::ConfigOptions;
 use datafusion_common::instant::Instant;
 use datafusion_common::tree_node::{Transformed, TreeNodeRewriter};
 use datafusion_common::{internal_err, DFSchema, DataFusionError, HashSet, Result};
+use datafusion_common::type_tracker::OriginalTypeTracker;
 use datafusion_expr::logical_plan::LogicalPlan;
 
 use crate::common_subexpr_eliminate::CommonSubexprEliminate;
@@ -111,6 +112,11 @@ pub trait OptimizerConfig {
     fn function_registry(&self) -> Option<&dyn FunctionRegistry> {
         None
     }
+
+    /// Get access to original type tracker for overflow-safe optimization
+    fn original_type_tracker(&self) -> Option<OriginalTypeTracker> {
+        None
+    }
 }
 
 /// A standalone [`OptimizerConfig`] that can be used independently
@@ -125,6 +131,9 @@ pub struct OptimizerContext {
     alias_generator: Arc<AliasGenerator>,
 
     options: Arc<ConfigOptions>,
+
+    /// Optional original type tracker for overflow-safe optimization
+    original_type_tracker: Option<OriginalTypeTracker>,
 }
 
 impl OptimizerContext {
@@ -142,7 +151,14 @@ impl OptimizerContext {
             query_execution_start_time: Utc::now(),
             alias_generator: Arc::new(AliasGenerator::new()),
             options,
+            original_type_tracker: None,
         }
+    }
+
+    /// Create optimizer config with original type tracker
+    pub fn with_original_type_tracker(mut self, tracker: OriginalTypeTracker) -> Self {
+        self.original_type_tracker = Some(tracker);
+        self
     }
 
     /// Specify whether to enable the filter_null_keys rule
@@ -195,6 +211,10 @@ impl OptimizerConfig for OptimizerContext {
 
     fn options(&self) -> Arc<ConfigOptions> {
         Arc::clone(&self.options)
+    }
+
+    fn original_type_tracker(&self) -> Option<OriginalTypeTracker> {
+        self.original_type_tracker.clone()
     }
 }
 

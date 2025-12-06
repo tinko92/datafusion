@@ -59,6 +59,7 @@ pub mod spans;
 pub mod stats;
 pub mod test_util;
 pub mod tree_node;
+pub mod type_tracker;
 pub mod types;
 pub mod utils;
 
