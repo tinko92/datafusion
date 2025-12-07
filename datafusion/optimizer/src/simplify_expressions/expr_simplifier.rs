@@ -875,7 +875,7 @@ impl<S: SimplifyInfo> TreeNodeRewriter for Simplifier<'_, S> {
                 })
             }
 
-            // a {<, >, <=, >=, =, !=} (a + b)  -->  0 {<, >, <=, >=, =, !=} b
+            // a {<, >, <=, >=, =, !=} a + b -> 0 {<, >, <=, >=, =, !=} b
             Expr::BinaryExpr(BinaryExpr {
                 left,
                 op: op @ (Lt | LtEq | Gt | GtEq | Eq | NotEq),
@@ -909,6 +909,7 @@ impl<S: SimplifyInfo> TreeNodeRewriter for Simplifier<'_, S> {
                 }))
             }
 
+            // a + b {<, >, <=, >=, =, !=} a -> b {<, >, <=, >=, =, !=} 0
             Expr::BinaryExpr(BinaryExpr {
                 left,
                 op: op @ (Lt | LtEq | Gt | GtEq | Eq | NotEq),
@@ -942,6 +943,7 @@ impl<S: SimplifyInfo> TreeNodeRewriter for Simplifier<'_, S> {
                 }))
             }
 
+            // a +(-) b {<, >, <=, >=, =, !=} a +(-) c -> (-)b {<, >, <=, >=, =, !=} (-)c
             Expr::BinaryExpr(BinaryExpr {
                 left,
                 op: cmp_op @ (Lt | LtEq | Gt | GtEq | Eq | NotEq),
@@ -994,6 +996,48 @@ impl<S: SimplifyInfo> TreeNodeRewriter for Simplifier<'_, S> {
                 }))
             }
 
+            // c*a +(-) b*a -> (c +(-) b)*a
+            Expr::BinaryExpr(BinaryExpr {
+                left,
+                op: pm_op @ (Plus | Minus),
+                right,
+            })
+                if is_integer_type(&info.get_data_type(&left)?)
+                && is_integer_type(&info.get_data_type(&right)?)
+                && matches!(
+                    (left.as_ref(), right.as_ref()),
+                    (
+                        Expr::BinaryExpr(BinaryExpr {
+                            left: _,
+                            op: Multiply,
+                            right: a1,
+                        }),
+                        Expr::BinaryExpr(BinaryExpr {
+                            left: _,
+                            op: Multiply,
+                            right: a2,
+                        }),
+                    ) if **a1 == **a2
+                ) =>
+            {
+                let (b, c, a) = match (*left, *right) {
+                    (
+                        Expr::BinaryExpr(BinaryExpr { left: b, op: Multiply, right: a }),
+                        Expr::BinaryExpr(BinaryExpr { left: c, op: Multiply, .. }),
+                    ) => (b, c, a),
+                    _ => unreachable!(),
+                };
+
+                Transformed::yes(Expr::BinaryExpr(BinaryExpr {
+                    left: Box::new(Expr::BinaryExpr(BinaryExpr {
+                        left: b,
+                        op: pm_op,
+                        right: c
+                    })),
+                    op: Multiply,
+                    right: a,
+                }))
+            }
 
             //
             // Rules for OR
