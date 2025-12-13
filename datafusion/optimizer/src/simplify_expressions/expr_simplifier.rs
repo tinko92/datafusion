@@ -1018,7 +1018,31 @@ impl<S: SimplifyInfo> TreeNodeRewriter for Simplifier<'_, S> {
                             right: a2,
                         }),
                     ) if **a1 == **a2
-                ) =>
+                ) && {
+                let (b, c) = match (left.as_ref(), right.as_ref()) {
+                    (
+                        Expr::BinaryExpr(BinaryExpr { left: b, op: Multiply, .. }),
+                        Expr::BinaryExpr(BinaryExpr { left: c, op: Multiply, .. }),
+                    ) => (b, c),
+                    _ => unreachable!(),
+                };
+                let pm_expr = Expr::BinaryExpr(BinaryExpr {
+                    left: Box::new((**b).clone()),
+                    op: pm_op.clone(),
+                    right: Box::new((**c).clone()),
+                });
+                let dt_left_mul  = info.get_data_type(&left)?;
+                let dt_right_mul = info.get_data_type(&right)?;
+                let dt_pm        = info.get_data_type(&pm_expr)?;
+                let same_types = dt_left_mul == dt_right_mul && dt_left_mul == dt_pm;
+                let bounded_intervals =
+                    !integer_interval_for_expr(&left, info)?.is_unbounded()
+                    && !integer_interval_for_expr(&right, info)?.is_unbounded()
+                    && !integer_interval_for_expr(&pm_expr, info)?.is_unbounded();
+
+                same_types || bounded_intervals
+            }
+            =>
             {
                 let (b, c, a) = match (*left, *right) {
                     (
@@ -1036,6 +1060,207 @@ impl<S: SimplifyInfo> TreeNodeRewriter for Simplifier<'_, S> {
                     })),
                     op: Multiply,
                     right: a,
+                }))
+            }
+
+            // a*c +(-) a*b -> a*(c +(-) b)
+            Expr::BinaryExpr(BinaryExpr {
+                left,
+                op: pm_op @ (Plus | Minus),
+                right,
+            })
+                if is_integer_type(&info.get_data_type(&left)?)
+                && is_integer_type(&info.get_data_type(&right)?)
+                && matches!(
+                    (left.as_ref(), right.as_ref()),
+                    (
+                        Expr::BinaryExpr(BinaryExpr {
+                            left: a1,
+                            op: Multiply,
+                            right: _,
+                        }),
+                        Expr::BinaryExpr(BinaryExpr {
+                            left: a2,
+                            op: Multiply,
+                            right: _,
+                        }),
+                    ) if **a1 == **a2
+                ) && {
+                let (b, c) = match (left.as_ref(), right.as_ref()) {
+                    (
+                        Expr::BinaryExpr(BinaryExpr { left: _, op: Multiply, right: b }),
+                        Expr::BinaryExpr(BinaryExpr { left: _, op: Multiply, right: c }),
+                    ) => (b, c),
+                    _ => unreachable!(),
+                };
+                let pm_expr = Expr::BinaryExpr(BinaryExpr {
+                    left: Box::new((**b).clone()),
+                    op: pm_op.clone(),
+                    right: Box::new((**c).clone()),
+                });
+                let dt_left_mul  = info.get_data_type(&left)?;
+                let dt_right_mul = info.get_data_type(&right)?;
+                let dt_pm        = info.get_data_type(&pm_expr)?;
+                let same_types = dt_left_mul == dt_right_mul && dt_left_mul == dt_pm;
+                let bounded_intervals =
+                    !integer_interval_for_expr(&left, info)?.is_unbounded()
+                    && !integer_interval_for_expr(&right, info)?.is_unbounded()
+                    && !integer_interval_for_expr(&pm_expr, info)?.is_unbounded();
+
+                same_types || bounded_intervals
+            }
+            =>
+            {
+                let (b, c, a) = match (*left, *right) {
+                    (
+                        Expr::BinaryExpr(BinaryExpr { left: a, op: Multiply, right: b }),
+                        Expr::BinaryExpr(BinaryExpr { left: _, op: Multiply, right: c }),
+                    ) => (b, c, a),
+                    _ => unreachable!(),
+                };
+
+                Transformed::yes(Expr::BinaryExpr(BinaryExpr {
+                    left: a,
+                    op: Multiply,
+                    right: Box::new(Expr::BinaryExpr(BinaryExpr {
+                        left: b,
+                        op: pm_op,
+                        right: c
+                    }))
+                }))
+            }
+
+            // a*c +(-) b*a -> (c +(-) b)*a
+            Expr::BinaryExpr(BinaryExpr {
+                left,
+                op: pm_op @ (Plus | Minus),
+                right,
+            })
+                if is_integer_type(&info.get_data_type(&left)?)
+                && is_integer_type(&info.get_data_type(&right)?)
+                && matches!(
+                    (left.as_ref(), right.as_ref()),
+                    (
+                        Expr::BinaryExpr(BinaryExpr {
+                            left: a1,
+                            op: Multiply,
+                            right: _,
+                        }),
+                        Expr::BinaryExpr(BinaryExpr {
+                            left: _,
+                            op: Multiply,
+                            right: a2,
+                        }),
+                    ) if **a1 == **a2
+                ) && {
+                let (b, c) = match (left.as_ref(), right.as_ref()) {
+                    (
+                        Expr::BinaryExpr(BinaryExpr { left: _, op: Multiply, right: c }),
+                        Expr::BinaryExpr(BinaryExpr { left: b, op: Multiply, .. }),
+                    ) => (b, c),
+                    _ => unreachable!(),
+                };
+                let pm_expr = Expr::BinaryExpr(BinaryExpr {
+                    left: Box::new((**b).clone()),
+                    op: pm_op.clone(),
+                    right: Box::new((**c).clone()),
+                });
+                let dt_left_mul  = info.get_data_type(&left)?;
+                let dt_right_mul = info.get_data_type(&right)?;
+                let dt_pm        = info.get_data_type(&pm_expr)?;
+                let same_types = dt_left_mul == dt_right_mul && dt_left_mul == dt_pm;
+                let bounded_intervals =
+                    !integer_interval_for_expr(&left, info)?.is_unbounded()
+                    && !integer_interval_for_expr(&right, info)?.is_unbounded()
+                    && !integer_interval_for_expr(&pm_expr, info)?.is_unbounded();
+
+                same_types || bounded_intervals
+            }
+            =>
+            {
+                let (b, c, a) = match (*left, *right) {
+                    (
+                        Expr::BinaryExpr(BinaryExpr { left: a, op: Multiply, right: c }),
+                        Expr::BinaryExpr(BinaryExpr { left: b, op: Multiply, .. }),
+                    ) => (b, c, a),
+                    _ => unreachable!(),
+                };
+
+                Transformed::yes(Expr::BinaryExpr(BinaryExpr {
+                    left: a,
+                    op: Multiply,
+                    right: Box::new(Expr::BinaryExpr(BinaryExpr {
+                        left: b,
+                        op: pm_op,
+                        right: c
+                    }))
+                }))
+            }
+
+            // c*a +(-) a*b -> a*(c +(-) b)
+            Expr::BinaryExpr(BinaryExpr {
+                left,
+                op: pm_op @ (Plus | Minus),
+                right,
+            })
+                if is_integer_type(&info.get_data_type(&left)?)
+                && is_integer_type(&info.get_data_type(&right)?)
+                && matches!(
+                    (left.as_ref(), right.as_ref()),
+                    (
+                        Expr::BinaryExpr(BinaryExpr {
+                            left: _,
+                            op: Multiply,
+                            right: a1,
+                        }),
+                        Expr::BinaryExpr(BinaryExpr {
+                            left: a2,
+                            op: Multiply,
+                            right: _,
+                        }),
+                    ) if **a1 == **a2
+                ) && {
+                let (b, c) = match (left.as_ref(), right.as_ref()) {
+                    (
+                        Expr::BinaryExpr(BinaryExpr { left: c, op: Multiply, .. }),
+                        Expr::BinaryExpr(BinaryExpr { left: _, op: Multiply, right: b }),
+                    ) => (b, c),
+                    _ => unreachable!(),
+                };
+                let pm_expr = Expr::BinaryExpr(BinaryExpr {
+                    left: Box::new((**b).clone()),
+                    op: pm_op.clone(),
+                    right: Box::new((**c).clone()),
+                });
+                let dt_left_mul  = info.get_data_type(&left)?;
+                let dt_right_mul = info.get_data_type(&right)?;
+                let dt_pm        = info.get_data_type(&pm_expr)?;
+                let same_types = dt_left_mul == dt_right_mul && dt_left_mul == dt_pm;
+                let bounded_intervals =
+                    !integer_interval_for_expr(&left, info)?.is_unbounded()
+                    && !integer_interval_for_expr(&right, info)?.is_unbounded()
+                    && !integer_interval_for_expr(&pm_expr, info)?.is_unbounded();
+
+                same_types || bounded_intervals
+            }
+            =>
+            {
+                let (b, c, a) = match (*left, *right) {
+                    (
+                        Expr::BinaryExpr(BinaryExpr { left: c, op: Multiply, right: a }),
+                        Expr::BinaryExpr(BinaryExpr { left: _, op: Multiply, right: b }),
+                    ) => (b, c, a),
+                    _ => unreachable!(),
+                };
+
+                Transformed::yes(Expr::BinaryExpr(BinaryExpr {
+                    left: a,
+                    op: Multiply,
+                    right: Box::new(Expr::BinaryExpr(BinaryExpr {
+                        left: b,
+                        op: pm_op,
+                        right: c
+                    }))
                 }))
             }
 
